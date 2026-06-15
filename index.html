@@ -282,7 +282,30 @@ body {
         <span style="color:var(--text2);">月</span>
         <input type="number" id="currentYear" value="" min="2020" max="2099" style="width:80px;" onchange="changeMonth()">
         <span style="color:var(--text2);">年</span>
-        <button class="btn btn-secondary btn-sm" onclick="resetAll()">🔄 重置数据</button>
+      </div>
+      <div class="row" style="align-items:flex-start;">
+        <label>批量默认卡</label>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <input type="date" id="bulkStart" style="width:130px;background:var(--card);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:0.85rem;">
+            <span style="color:var(--text2);">~</span>
+            <input type="date" id="bulkEnd" style="width:130px;background:var(--card);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:0.85rem;">
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <input type="time" id="bulkPin" value="08:00" style="width:100px;background:var(--card);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:0.85rem;">
+            <span>~</span>
+            <input type="time" id="bulkPout" value="17:30" style="width:100px;background:var(--card);border:1px solid var(--border);color:var(--text);padding:5px 8px;border-radius:6px;font-size:0.85rem;">
+            <button class="btn btn-sm" style="background:var(--accent2);" onclick="applyBulkCard()">应用</button>
+          </div>
+          <div id="bulkResult" style="font-size:0.78rem;color:var(--text2);min-height:16px;"></div>
+        </div>
+      </div>
+      <div class="row">
+        <label>数据管理</label>
+        <button class="btn btn-sm" style="background:#2e7d32;" onclick="exportData()">📥 导出数据</button>
+        <button class="btn btn-sm" style="background:#1565c0;" onclick="document.getElementById('importFile').click()">📤 导入数据</button>
+        <button class="btn btn-secondary btn-sm" onclick="resetAll()">🔄 重置</button>
+        <input type="file" id="importFile" accept=".json" style="display:none;" onchange="importData(event)">
       </div>
     </div>
   </div>
@@ -880,6 +903,49 @@ function removeLeaveRecord(index) {
   showToast('请假记录已删除');
 }
 
+function applyBulkCard() {
+  const startStr = document.getElementById('bulkStart').value;
+  const endStr = document.getElementById('bulkEnd').value;
+  const pin = document.getElementById('bulkPin').value;
+  const pout = document.getElementById('bulkPout').value;
+  const resultEl = document.getElementById('bulkResult');
+
+  if (!startStr || !endStr) { resultEl.innerHTML = '<span style="color:var(--red);">请选择起止日期</span>'; return; }
+  if (!pin || !pout) { resultEl.innerHTML = '<span style="color:var(--red);">请填写打卡时间</span>'; return; }
+
+  const start = new Date(startStr + 'T00:00:00');
+  const end = new Date(endStr + 'T00:00:00');
+  if (end < start) { resultEl.innerHTML = '<span style="color:var(--red);">结束日期不能早于开始日期</span>'; return; }
+
+  if (!confirm(`将在 ${startStr} ~ ${endStr} 之间的所有工作日上添加默认打卡 ${pin}~${pout}，已有记录的工作日将被跳过。确认？`)) return;
+
+  let applied = 0, skipped = 0;
+  const cursor = new Date(start);
+  while (cursor <= end) {
+    const y = cursor.getFullYear();
+    const m = cursor.getMonth() + 1;
+    const d = cursor.getDate();
+    const key = dateKey(y, m, d);
+    if (isWorkday(y, m, d)) {
+      const exists = allPunches[key] && allPunches[key].punches && allPunches[key].punches.length > 0;
+      if (!exists) {
+        if (!allPunches[key]) allPunches[key] = { punches: [], leaveRecords: [] };
+        if (!allPunches[key].punches) allPunches[key].punches = [];
+        allPunches[key].punches.push([pin, pout]);
+        applied++;
+      } else {
+        skipped++;
+      }
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  saveAllData();
+  refreshAll();
+  resultEl.innerHTML = `已为 <b>${applied}</b> 个工作日添加默认卡${skipped > 0 ? `，跳过 ${skipped} 个已有记录` : ''}`;
+  showToast(`批量应用完成：${applied} 天`);
+}
+
 function setDayOverride(type) {
   // type: 'holiday' | 'swap' | null (restore default)
   if (!selectedDate) return;
@@ -1005,6 +1071,72 @@ function saveAllData() {
   localStorage.setItem('hmtl_settings', JSON.stringify(settings));
   localStorage.setItem('hmtl_punches', JSON.stringify(allPunches));
   localStorage.setItem('hmtl_overrides', JSON.stringify(dayOverrides));
+}
+
+// ============ EXPORT / IMPORT ============
+const DATA_VERSION = 1;
+
+function exportData() {
+  const payload = {
+    version: DATA_VERSION,
+    exportedAt: new Date().toISOString(),
+    settings: settings,
+    punches: allPunches,
+    dayOverrides: dayOverrides,
+  };
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `hmtl_backup_${dateKey(new Date().getFullYear(), new Date().getMonth()+1, new Date().getDate())}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('数据已导出');
+}
+
+function importData(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const payload = JSON.parse(e.target.result);
+      // Validate structure
+      if (typeof payload.version !== 'number') throw new Error('无效的数据格式：缺少 version');
+      if (!payload.settings || !payload.punches) throw new Error('无效的数据格式：缺少 settings 或 punches');
+
+      // Handle version migration if needed (future-proof)
+      if (payload.version > DATA_VERSION) {
+        if (!confirm(`备份文件版本 (v${payload.version}) 高于当前版本 (v${DATA_VERSION})，可能包含不兼容的数据。是否继续导入？`)) {
+          return;
+        }
+      }
+
+      if (!confirm(`确认导入？\n导出时间：${payload.exportedAt || '未知'}\n包含 ${Object.keys(payload.punches).length} 天打卡记录\n当前数据将被覆盖！`)) {
+        return;
+      }
+
+      // Merge settings — preserve defaults for any missing keys
+      settings = { ...DEFAULT_SETTINGS, ...payload.settings };
+      if (!Array.isArray(settings.restPeriods) || settings.restPeriods.length === 0) {
+        settings.restPeriods = [...DEFAULT_SETTINGS.restPeriods.map(r => [...r])];
+      }
+      allPunches = payload.punches || {};
+      dayOverrides = payload.dayOverrides || {};
+
+      saveAllData();
+      renderSettings();
+      refreshAll();
+      showToast('数据导入成功');
+    } catch (err) {
+      showToast('导入失败：' + err.message);
+      console.error(err);
+    }
+  };
+  reader.readAsText(file);
+  // Reset file input so the same file can be re-imported
+  event.target.value = '';
 }
 
 // ============ INIT ============

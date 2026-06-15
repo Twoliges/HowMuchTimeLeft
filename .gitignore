@@ -1,0 +1,12 @@
+# 考勤数据备份文件
+hmtl_backup_*.json
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+Thumbs.db
+.DS_Store
